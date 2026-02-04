@@ -36,10 +36,7 @@ def convert_bitdepth(image: np.ndarray, bitdepth: int) -> np.ndarray:
 
 
 def read_grayscale_image(
-    input_image: Union[str, Path],
-    force_channel: int = -1,
-    force_bit_depth: int = 0,
-    minmax_norm: bool = False
+    input_image: Union[str, Path], force_channel: int = -1, force_bit_depth: int = 0
 ) -> np.ndarray:
     """Read and preprocess a grayscale image from file or URL.
 
@@ -47,7 +44,6 @@ def read_grayscale_image(
         input_image: Path to image file or URL
         force_channel: Extract specific channel index (default: -1 for auto)
         force_bit_depth: Convert to specific bit depth (default: 0 for no conversion)
-        minmax_norm: Apply min-max normalization to [0, 1] range
 
     Returns:
         Preprocessed grayscale image as numpy array
@@ -61,7 +57,7 @@ def read_grayscale_image(
         # Check file extension to choose optimal loading method
         file_ext = Path(input_image).suffix.lower()
 
-        if file_ext in ['.tiff', '.tif']:
+        if file_ext in [".tiff", ".tif"]:
             # Use tifffile for TIFF images
             np_img = tifffile.imread(input_image)
         else:
@@ -80,9 +76,8 @@ def read_grayscale_image(
         np_img = np_img[:, :, force_channel]
     elif np_img.ndim > 2:
         np_img = np.max(np_img, axis=2)
+
     if force_bit_depth != 0:
         np_img = convert_bitdepth(np_img, force_bit_depth)
-    elif minmax_norm:
-        np_img = (np_img - np.amin(np_img)) / (np.amax(np_img) - np.amin(np_img))
 
     return np_img

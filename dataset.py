@@ -6,6 +6,13 @@ from torch.utils.data import Dataset
 import image_utils
 
 
+def min_max_norm_fn(x: np.ndarray) -> np.ndarray:
+    """Normalize array using min-max normalization."""
+    min_vals = np.amin(x, keepdims=True)
+    max_vals = np.amax(x, keepdims=True)
+    return (x - min_vals) / (max_vals - min_vals + 1e-8)
+
+
 class SubCellDataset(Dataset):
     """PyTorch Dataset for SubCell image processing"""
 
@@ -21,22 +28,22 @@ class SubCellDataset(Dataset):
 
         # Define channel mapping
         self.channel_mapping = {
-            'r': 'r_image',
-            'y': 'y_image',
-            'b': 'b_image',
-            'g': 'g_image'
+            "r": "r_image",
+            "y": "y_image",
+            "b": "b_image",
+            "g": "g_image",
         }
 
         # Read CSV
         df = pd.read_csv(path_list_file)
 
         # Remove the '#' from column names if present
-        df.columns = df.columns.str.lstrip('#')
+        df.columns = df.columns.str.lstrip("#")
 
         # Detect CSV format (old vs new)
-        self.uses_old_format = 'output_folder' in df.columns
+        self.uses_old_format = "output_folder" in df.columns
 
-        self.data_list = df.to_dict('records')
+        self.data_list = df.to_dict("records")
 
     def __len__(self) -> int:
         """Return the number of samples in the dataset."""
@@ -45,19 +52,23 @@ class SubCellDataset(Dataset):
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         """Load and preprocess a single image set"""
         item = self.data_list[idx]
-        
+
         # Load images based on model channels configuration
         cell_data = []
-        
+
         # Only process channels specified in model_channels
         for channel_name in self.model_channels:
             channel_key = self.channel_mapping[channel_name]
-            # load the channel image (always normalized to 0-1 range as required by model)
-            img = image_utils.read_grayscale_image(item[channel_key], minmax_norm=True)
+            # load the channel image
+            img = image_utils.read_grayscale_image(item[channel_key])
             cell_data.append(img)
-        
+
         # Stack images along channel dimension
         cell_data = np.stack(cell_data, axis=0)  # Shape: (channels, height, width)
+
+        cell_data = min_max_norm_fn(
+            cell_data
+        )  # (always normalized to 0-1 range as required by model)
 
         result = {
             "images": cell_data.astype(np.float32),
@@ -96,4 +107,3 @@ def collate_fn(batch: List[Dict[str, Any]]) -> Dict[str, Any]:
         result["output_folders"] = [item["output_folder"] for item in batch]
 
     return result
-
