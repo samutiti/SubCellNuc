@@ -1,7 +1,6 @@
 from typing import Union
 import numpy as np
-import tifffile
-from PIL import Image
+import cv2
 from pathlib import Path
 import os
 import logging
@@ -54,16 +53,7 @@ def read_grayscale_image(
     logger = logging.getLogger(__name__)
 
     try:
-        # Check file extension to choose optimal loading method
-        file_ext = Path(input_image).suffix.lower()
-
-        if file_ext in [".tiff", ".tif"]:
-            # Use tifffile for TIFF images
-            np_img = tifffile.imread(input_image)
-        else:
-            # Use PIL for everything else (PNG, JPG, etc.)
-            pil_img = Image.open(input_image)
-            np_img = np.array(pil_img)
+        np_img = cv2.imread(str(input_image), -1)
     except FileNotFoundError:
         logger.error(f"Image file not found: {input_image}")
         raise
