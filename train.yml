@@ -1,0 +1,7 @@
+hidden_dim: 1360
+learning_rate: 0.001
+num_epochs: 20
+batch_size: 64
+datapath: "paired_subcell_esm.h5ad"
+shuffle: True
+mlp_weights_path: "mlp_weights.pth"

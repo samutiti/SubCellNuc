@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 import inference
+from mlp import MLP
 from vit_model import ViTPoolClassifier
 from dataset import SubCellDataset, collate_fn
 from config import SubCellConfig, PATH_LIST_CSV, LOG_FILE
@@ -196,6 +197,17 @@ def run_inference() -> None:
         logger = setup_logging()
 
     config.log = logger
+    config.embeddings_only = True # set this flag to True always
+    mlp = MLP()
+    mlp.to(setup_device(config.gpu, logger))
+    # load mlp weights from mlp_weights.pth
+    try:
+        if os.path.exists(config.mlp_weights_path):
+            mlp.load_state_dict(torch.load(config.mlp_weights_path))
+    except Exception as e:
+        logger.error(f"Error loading MLP weights from {config.mlp_weights_path}: {e}")
+        logger.error("Please ensure the MLP weights file exists and is a valid PyTorch state_dict.")
+        raise
 
     # Log start
     logger.info("=" * 60)
@@ -303,7 +315,7 @@ def run_inference() -> None:
 
             # Run inference
             try:
-                inference_result = inference.run_model(
+                embeddings = inference.run_model(
                     model, images, device, output_paths,
                     save_attention_maps=config.save_attention_maps,
                     embeddings_only=config.embeddings_only,
@@ -328,39 +340,18 @@ def run_inference() -> None:
                     logger.error("=" * 60)
                 raise
 
-            # Handle different return formats
-            if config.output_format == "combined":
-                batch_results = inference_result
-            elif config.async_saving:
-                batch_results, (executor, futures) = inference_result
-                pending_executors.append(executor)
-                pending_futures.extend(futures)
-            else:
-                batch_results = inference_result
-
-            # Free GPU memory
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
-            # Extract embeddings and probabilities
-            embeddings = [result[0] for result in batch_results]
-            probabilities_list = [result[1] for result in batch_results]
-
+            ## generate MLP embeddings
+            embeddings = MLP(embeddings)
+            probabilities_list = [None] * len(embeddings)  # No probabilities in embeddings_only mode
             # Add to output handlers
             if csv_handler:
                 csv_handler.add_batch(output_prefixes, embeddings, probabilities_list)
 
             if h5ad_handler:
                 h5ad_handler.add_batch(output_prefixes, embeddings, probabilities_list)
+            
 
-            # Log progress
-            process_batch_results(
-                batch_results,
-                output_prefixes,
-                classifier_paths,
-                config
-            )
-
+ 
         # Wait for async saves to complete
         if config.async_saving and pending_futures:
             logger.info(f"Waiting for {len(pending_futures)} async save operations...")
