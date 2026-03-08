@@ -1,113 +1,132 @@
+# train_mpl.py
+import os
 import torch
-import torch.nn as nn
 from torch.utils.data import DataLoader
-import numpy as np
-from data import ESMDataset
-from mlp import MLP
-from clip import ProteinBagToCLIP, clip_loss
-import argparse
-import yaml
 
-class Trainer:
-    def __init__(self, model, dataloader, optimizer, criterion, device, wt_clip_loss=1.0, wt_contrastive_loss=1.0):
-        self.model = model
-        self.dataloader = dataloader
-        self.clip_model = ProteinBagToCLIP(d_esm=1280, d_clip=model.output_dim) # this should match the dimensions of the MLP output and the ESM embeddings
-        self.optimizer = optimizer
-        self.criterion = criterion # will use contrastive loss
-        self.device = device
-        self.wt_clip_loss = wt_clip_loss
-        self.wt_contrastive_loss = wt_contrastive_loss
+from models import ImageProjector, ProteinPool, clip_loss
+from data import EmbeddingPairDataset, collate_variable_proteins
 
-    def train_epoch(self):
-        self.model.train()
-        total_loss = 0.0
 
-        for batch in self.dataloader:
-            inputs, targets = batch
-            inputs, targets = inputs.to(self.device), targets.to(self.device)
+def save_checkpoint(path, projector, pool, optimizer, epoch):
+    ckpt = {
+        "epoch": epoch,
+        "projector_state": projector.state_dict(),
+        "pool_state": pool.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+    }
+    torch.save(ckpt, path)
 
-            # Forward pass
-            outputs = self.model(inputs)
-            targets = self.clip_model(targets) # get pooled ESM embeddings for the targets, assume this is a list of lists
-            loss = self.wt_contrastive_loss*self.criterion(outputs, targets) + self.wt_clip_loss*clip_loss(outputs, targets) # combine contrastive loss with the original loss (if any)
-            # question: does training on these two losses simultaneously cause any issue? will it create a moving taget for the contrastive loss?
-            # answer: it might, but we can experiment with weighting the losses differently if needed. For now, we can just sum them and see how it goes.
 
-            # Backward pass
-            self.optimizer.zero_grad() 
-            loss.backward()
-            self.optimizer.step()
-            self.optimizer.zero_grad()
+def load_checkpoint(path, projector, pool, optimizer=None, map_location="cpu"):
+    ckpt = torch.load(path, map_location=map_location)
+    projector.load_state_dict(ckpt["projector_state"])
+    pool.load_state_dict(ckpt["pool_state"])
+    if optimizer is not None and "optimizer_state" in ckpt:
+        optimizer.load_state_dict(ckpt["optimizer_state"])
+    return ckpt.get("epoch", 0)
 
-            total_loss += loss.item()
 
-        return total_loss / len(self.dataloader)
-    
-    def train(self, num_epochs):
-        for epoch in range(num_epochs):
-            avg_loss = self.train_epoch()
-            print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_loss:.4f}")
-        
-    def save_model(self, path):
-        torch.save(self.model.state_dict(), path)
+def train_one_epoch(projector, pool, loader, optimizer, device, temperature=0.07):
+    projector.train()
+    pool.train()
 
-class ContrastiveLoss(torch.nn.Module):
-    def __init__(self):
-        self.temperature = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
-        pass
+    total_loss = 0.0
+    for imgs, prots, mask in loader:
+        imgs = imgs.to(device)       # [B,1536]
+        prots = prots.to(device)     # [B,N,1280]
+        mask = mask.to(device)       # [B,N]
 
-    def forward(self, subcell, esm): # NOTE: i hope this will work
-        # scaled pairwise cosine similarities [n, n]
-        logits = (subcell @ esm.transpose(-2,-1)) * torch.exp(self.temperature)
+        img_z = projector(imgs)                  # [B,1280]
+        prot_z = pool(prots, mask=mask)          # [B,1280]
+        loss = clip_loss(img_z, prot_z, temperature=temperature)
 
-        # symmetric loss function from: https://medium.com/correll-lab/building-clip-from-scratch-68f6e42d35f4, Nguyen 2024
-        labels = torch.arange(logits.shape[0]).to(self.device)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
 
-        loss_s = nn.functional.cross_entropy(logits.transpose(-2,-1), labels) # row-wise loss (subcell)
-        loss_e = nn.functional.cross_entropy(logits, labels) # column-wise loss (esm)
+        total_loss += loss.item() * imgs.size(0)
 
-        loss = (loss_s + loss_e) / 2
-        return loss
-    
+    return total_loss / len(loader.dataset)
+
+
+@torch.no_grad()
+def evaluate(projector, pool, loader, device, temperature=0.07):
+    projector.eval()
+    pool.eval()
+
+    total_loss = 0.0
+    for imgs, prots, mask in loader:
+        imgs = imgs.to(device)
+        prots = prots.to(device)
+        mask = mask.to(device)
+
+        img_z = projector(imgs)
+        prot_z = pool(prots, mask=mask)
+        loss = clip_loss(img_z, prot_z, temperature=temperature)
+        total_loss += loss.item() * imgs.size(0)
+
+    return total_loss / len(loader.dataset)
+
 
 def main():
-    parser = argparse.ArgumentParser(description='Train MLP on ESM embeddings')
-    parser.add_argument('config', type=str, help='Path to configuration file, .yaml file')
-    args = parser.parse_args()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    # Load hyperparameters from YAML config file
-    with open(args.config, 'r') as f:
-        config = yaml.safe_load(f)
+    # ---- Replace this with your real loaded tensors ----
+    # items is a list of (img_emb[1536], prot_embs[N,1280])
+    # prot_embs can have variable N across items.
+    items = []
+    for _ in range(200):
+        img = torch.randn(1536)
+        N = torch.randint(low=1, high=6, size=()).item()
+        prots = torch.randn(N, 1280)
+        items.append((img, prots))
 
-    # Hyperparameters
-    input_dim = 1536 # this should match the dimension of the Subcell embeddings
-    hidden_dim = config.get('hidden_dim', 1360)
-    output_dim = 1280 # this should match the dimension of the ESM-like embeddings you want to generate
-    data_path = config.get('datapath', 'data.npy')
-    learning_rate = config.get('learning_rate', 0.001)
-    num_epochs = config.get('num_epochs', 20)
-    batch_size = config.get('batch_size', 32)
-    shuffle = config.get('shuffle', True)
-    mlp_weights_path = config.get('mlp_weights_path', 'mlp_weights.pth')
+    train_items = items[:160]
+    val_items = items[160:]
 
-    # Device configuration
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    train_ds = EmbeddingPairDataset(train_items)
+    val_ds = EmbeddingPairDataset(val_items)
 
-    # Dataset and DataLoader
-    dataset = ESMDataset(filepath=data_path)
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, collate_fn=ESMDataset.collate_fn)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=32,
+        shuffle=True,
+        num_workers=0,
+        collate_fn=collate_variable_proteins,
+        drop_last=True,  # CLIP loss expects square logits; drop_last avoids tiny last batch
+    )
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=32,
+        shuffle=False,
+        num_workers=0,
+        collate_fn=collate_variable_proteins,
+        drop_last=False,
+    )
 
-    # Model, Loss, Optimizer
-    model = MLP(input_dim, hidden_dim, output_dim).to(device)
-    criterion = ContrastiveLoss()
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    projector = ImageProjector(in_dim=1536, out_dim=1280).to(device)
+    pool = ProteinPool(dim=1280).to(device)
 
-    # Trainer
-    trainer = Trainer(model, dataloader, optimizer, criterion, device)
-    trainer.train(num_epochs)
-    trainer.save_model(mlp_weights_path)
+    # Optimizer includes parameters from BOTH modules
+    optimizer = torch.optim.AdamW(
+        list(projector.parameters()) + list(pool.parameters()),
+        lr=1e-4,
+        weight_decay=1e-2,
+    )
+
+    ckpt_path = "checkpoint.pt"
+    start_epoch = 0
+    if os.path.exists(ckpt_path):
+        start_epoch = load_checkpoint(ckpt_path, projector, pool, optimizer, map_location=device)
+
+    for epoch in range(start_epoch, start_epoch + 10):
+        train_loss = train_one_epoch(projector, pool, train_loader, optimizer, device)
+        val_loss = evaluate(projector, pool, val_loader, device)
+
+        print(f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f}")
+        if epoch % 5 == 0:
+            save_checkpoint(f'ckpt_epoch_{epoch}.pt', projector, pool, optimizer, epoch + 1)
+        save_checkpoint('checkpoint.pt', projector, pool, optimizer, epoch + 1)
 
 if __name__ == "__main__":
     main()
-    
