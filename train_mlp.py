@@ -4,16 +4,20 @@ from torch.utils.data import DataLoader
 import numpy as np
 from data import ESMDataset
 from mlp import MLP
+from clip import ProteinBagToCLIP, clip_loss
 import argparse
 import yaml
 
 class Trainer:
-    def __init__(self, model, dataloader, optimizer, criterion, device):
+    def __init__(self, model, dataloader, optimizer, criterion, device, wt_clip_loss=1.0, wt_contrastive_loss=1.0):
         self.model = model
         self.dataloader = dataloader
+        self.clip_model = ProteinBagToCLIP(d_esm=1280, d_clip=model.output_dim) # this should match the dimensions of the MLP output and the ESM embeddings
         self.optimizer = optimizer
         self.criterion = criterion # will use contrastive loss
         self.device = device
+        self.wt_clip_loss = wt_clip_loss
+        self.wt_contrastive_loss = wt_contrastive_loss
 
     def train_epoch(self):
         self.model.train()
@@ -25,10 +29,13 @@ class Trainer:
 
             # Forward pass
             outputs = self.model(inputs)
-            loss = self.criterion(outputs, targets)
+            targets = self.clip_model(targets) # get pooled ESM embeddings for the targets, assume this is a list of lists
+            loss = self.wt_contrastive_loss*self.criterion(outputs, targets) + self.wt_clip_loss*clip_loss(outputs, targets) # combine contrastive loss with the original loss (if any)
+            # question: does training on these two losses simultaneously cause any issue? will it create a moving taget for the contrastive loss?
+            # answer: it might, but we can experiment with weighting the losses differently if needed. For now, we can just sum them and see how it goes.
 
             # Backward pass
-            self.optimizer.zero_grad()
+            self.optimizer.zero_grad() 
             loss.backward()
             self.optimizer.step()
             self.optimizer.zero_grad()
