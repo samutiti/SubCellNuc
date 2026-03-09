@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import torch
 from unipressed import IdMappingClient
+from tqdm import tqdm
 
 
 client = IdMappingClient()
@@ -16,10 +17,10 @@ def query_uniprot(gene_name):
     return [entry['to'] for entry in response] if response else [None]
 
 
-embeddings, hpa_df = torch.load('data/all_harmonized.pt') # loads embeddings and dataframe and hpa
-esm_embeddings = pd.read_csv('data/esm_embeddings.csv') # loads esm embeddings for all uniprot ids in file
+embeddings, hpa_df = torch.load('/scratch/users/samutiti/U54/embeddings/all_harmonized_features_microscope_vit.pth', weights_only=False) # loads embeddings and dataframe and hpa
+esm_embeddings = pd.read_csv('/scratch/users/samutiti/U54/embeddings/seq_emd.tsv', sep='\t') # loads esm embeddings for all uniprot ids in file
 # loop through embeddings, access protein name using hpa_df['gene_name'], query unitprot with gene names
-for i, (emb, gene_name) in enumerate(zip(embeddings, hpa_df['gene_name'])):
+for i, (emb, gene_name) in tqdm(enumerate(zip(embeddings, hpa_df['gene_name']))):
     # query uniprot with gene name to get uniprot id
     # load esm embedding for uniprot id
     # pair subcell embedding and esm embedding
