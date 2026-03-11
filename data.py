@@ -58,9 +58,16 @@ class EmbeddingPairDataset(Dataset):
 
     def __getitem__(self, idx):
         img, prots = self.items[idx]
-        prots = np.array(prots)
+
         img = torch.as_tensor(img, dtype=torch.float32)
-        prots = torch.as_tensor(prots, dtype=torch.float32)
+
+        # handle variable-length protein lists safely
+        if prots is None or len(prots) == 0:
+            prots = torch.zeros((0, 1280), dtype=torch.float32)
+        else:
+            prots = np.stack(prots).astype(np.float32)   # convert list -> [N,1280]
+            prots = torch.from_numpy(prots)
+
         return img, prots
 
 
