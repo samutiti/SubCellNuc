@@ -30,8 +30,11 @@ for i, (emb, gene_name) in tqdm(enumerate(zip(embeddings, hpa_df['gene_names']))
     gene_names = gene_name.split(',') # some entries have multiple gene names separated by ','
     curr_embeddings = []
     uniprot_ids = query_uniprot(gene_names) # get uniprot ids for all gene names
-    for uid in uniprot_ids:
-        curr_embeddings.append(esm_embeddings[esm_embeddings['gene'] == uid].iloc[0][1:])
+    try:
+        for uid in uniprot_ids:
+            curr_embeddings.append(esm_embeddings[esm_embeddings['gene'] == uid].iloc[0][1:])
+    except:
+        curr_embeddings.append(None)
     curr_embeddings = np.array(curr_embeddings) # convert list of esm embeddings to numpy array
 
 all_data = (embeddings, curr_embeddings) # implement this function to pair subcell and esm embeddings and save as .npy file
