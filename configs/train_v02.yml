@@ -1,0 +1,8 @@
+hidden_dim: 1360
+learning_rate: 0.001
+num_epochs: 50
+batch_size: 64
+filedir: "/scratch/users/samutiti/U54/paired_embeddings"
+shuffle: True
+output_dir: 'training_V02'
+temperature: 0.07
