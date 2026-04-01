@@ -65,7 +65,7 @@ def clip_loss(img, prot, temperature=0.07):
     prot = F.normalize(prot, dim=-1)
 
     logits = (img @ prot.t()) / temperature  # [B,B]
-    targets = torch.arange(img.size(0), device=img.device)
+    targets = torch.arange(img.size(0), device=img.device) # [0 to B-1]
 
     loss_i2p = F.cross_entropy(logits, targets)
     loss_p2i = F.cross_entropy(logits.t(), targets)
