@@ -1,0 +1,37 @@
+  ---
+  New files
+
+  data_gen/make_subcell_esm_data_3.py
+
+  Extends v2 by passing locations and atlas_name from hpa_df into process_row. Each row returns a 5-tuple; per chunk a meta_<start>_<end>.pkl
+  DataFrame is saved alongside the existing subcell_*.npy and esm_*.npy files. Gene names are sorted before being joined to a canonical key (so
+  "GENE_A,GENE_B" and "GENE_B,GENE_A" don't become spurious distinct classes). Output goes to paired_embeddings_v2/.
+
+  data_v2.py — EmbeddingPairDatasetV2
+
+  Loads all three file types and builds two vocabularies during __init__:
+  - gene_vocab: maps canonical gene keys → class index; keys below min_gene_count are absent (those rows get gene_idx = -1 and are silently excluded
+   from identity CE loss while still contributing to CLIP loss).
+  - loc_vocab: all unique comma-separated location tokens, sorted alphabetically.
+
+  __getitem__ returns (img, prots, gene_id_tensor, loc_multihot). collate_variable_proteins_v2 handles the variable-length protein padding as
+  before, plus stacks the new label tensors.
+
+  mlp_models_v2.py
+
+  - ImageProjectorV2: splits the original ImageProjector into encoder (→ hidden_dim, the intermediate embedding h) and projector (h → out_dim, the
+  ESM-aligned z). forward returns both.
+  - ProteinIdentityHead / LocalizationHead: single linear layers on top of h.
+  - combined_loss: clip_loss(z, prot_z) + λ_id · CE(identity_head(h)) + λ_loc · BCE(loc_head(h)). The identity term masks out gene_ids == -1; the
+  localization term is full-batch multi-label BCE.
+
+  train_mlp_v2.py
+
+  Orchestrates training of all four modules. Key additions vs train_mlp.py:
+  - Saves vocab.json to output_dir after dataset load (for downstream inference/evaluation).
+  - Checkpoints include n_genes / n_locs so heads can be reconstructed without re-reading data.
+  - TensorBoard logs all four loss components (total, clip, id, loc) with train/val split scalars.
+
+  configs/train_v05.yml
+
+  All existing v04 hyperparameters plus lambda_id, lambda_loc, and min_gene_count. Set either lambda to 0.0 to ablate that task.
