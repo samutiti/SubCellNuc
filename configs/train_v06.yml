@@ -1,0 +1,18 @@
+hidden_dim: 1500
+learning_rate: 0.001
+num_epochs: 50
+batch_size: 64
+filedir: "/scratch/users/samutiti/U54/paired_embeddings_v2"
+shuffle: True
+output_dir: "training_V06"
+temperature: 0.07
+
+# --- Multi-task loss weights ---
+# Set either to 0.0 to disable that auxiliary task entirely.
+lambda_id: 0.0    # weight on protein-identity cross-entropy loss
+lambda_loc: 1.0   # weight on localization BCE loss
+
+# Minimum number of occurrences a gene_names key must have in the full
+# dataset to receive a class index.  Rows below this threshold still
+# contribute to the CLIP loss; they are skipped in the identity CE loss.
+min_gene_count: 50

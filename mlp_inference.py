@@ -9,12 +9,16 @@ from torch.utils.data import DataLoader
 from data import SubcellDataset, subcell_collate
 from mlp_models import ImageProjector
 
+VERSION = 5
+print(
+    f'running inference on version {VERSION} of training'
+)
 
 ########## FIT PARAMS HERE ################
-config_filepath = "/scratch/users/samutiti/U54/SubCellNuc/configs/train_v04.yml"
-model_filepath = "/scratch/users/samutiti/U54/SubCellNuc/training_V04/checkpoint.pt"
+config_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/configs/train_v0{VERSION}.yml"
+model_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}/checkpoint.pt"
 data_filepath = "/scratch/users/samutiti/U54/embeddings/all_harmonized_features_microscope_vit.pth"
-outpath = "/scratch/users/samutiti/U54/SubCellNuc/training_V04/inference.h5ad"
+outpath = f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}/inference.h5ad"
 ###########################################
 
 
