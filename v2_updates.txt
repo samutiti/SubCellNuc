@@ -35,3 +35,15 @@
   configs/train_v05.yml
 
   All existing v04 hyperparameters plus lambda_id, lambda_loc, and min_gene_count. Set either lambda to 0.0 to ablate that task.
+
+
+   Created mlp_inference_v2.py. Key changes from v1:
+
+  - Model loading: loads all four components (projector, pool, identity_head, loc_head) from the checkpoint's respective state dict keys,
+  matching save_checkpoint in train_mlp_v2.py
+  - Vocab: reads vocab.json from the model directory (saved by training) to reconstruct n_genes/n_locs and build the inverse gene vocab for
+  metadata
+  - Data: uses EmbeddingPairDatasetV2 + collate_variable_proteins_v2 with filedir from config (instead of a single .pth file)
+  - Inference: projector now returns (h, z) — z (ESM-aligned, 1280-d) is stored as adata.X to match the spirit of v1, and h (hidden,
+  hidden_dim-d) is stored in adata.obsm["h"]
+  - Metadata: built from dataset.items after inference (gene name, gene_idx, locations), since the v2 collate doesn't return metadata dicts
