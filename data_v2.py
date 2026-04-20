@@ -27,7 +27,8 @@ class EmbeddingPairDatasetV2(Dataset):
                         identity cross-entropy.
     """
 
-    def __init__(self, filedir, min_gene_count=50):
+    def __init__(self, filedir, min_gene_count=50, atlas_filter=None):
+        self.atlas_filter = atlas_filter
         self.items, self.gene_vocab, self.loc_vocab = self._load_data(
             Path(filedir), min_gene_count
         )
@@ -62,12 +63,15 @@ class EmbeddingPairDatasetV2(Dataset):
             assert len(sub_data) == len(esm_data) == len(meta_df)
 
             for i in range(len(sub_data)):
+                atlas_str = meta_df.iloc[i].get("atlas_name", "")
+                if self.atlas_filter and atlas_str != self.atlas_filter:
+                    continue
                 raw_items.append((
                     sub_data[i],
                     esm_data[i],
                     meta_df.iloc[i]["gene_names"],
                     meta_df.iloc[i]["locations"],
-                    meta_df.iloc[i].get("atlas_name", ""),
+                    atlas_str,
                 ))
 
         # ------ Build gene vocabulary (with frequency filter) ----------

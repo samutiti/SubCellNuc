@@ -59,6 +59,7 @@ for VERSION in versions:
     dataset = EmbeddingPairDatasetV2(
         config["filedir"],
         min_gene_count=config.get("min_gene_count", 50),
+        atlas_filter="U2OS",
     )
 
     print(f"Dataset size : {len(dataset)}")
