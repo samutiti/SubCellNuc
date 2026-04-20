@@ -18,7 +18,7 @@ print(
 config_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/configs/train_v0{VERSION}.yml"
 model_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}/checkpoint.pt"
 data_filepath = "/scratch/users/samutiti/U54/embeddings/all_harmonized_features_microscope_vit.pth"
-outpath = f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}/inference.h5ad"
+outpath = f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}/inference_u2os.h5ad"
 ###########################################
 
 
