@@ -44,7 +44,7 @@ class EmbeddingPairDatasetV2(Dataset):
             "Mismatch in number of subcell / esm / meta files"
         )
 
-        raw_items = []  # (subcell_arr, esm_list, gene_key, loc_str)
+        raw_items = []  # (subcell_arr, esm_list, gene_key, loc_str, atlas_str)
 
         for sub_f, esm_f, meta_f in zip(subcell_files, esm_files, meta_files):
             # Verify the numeric range suffix matches across all three
@@ -67,6 +67,7 @@ class EmbeddingPairDatasetV2(Dataset):
                     esm_data[i],
                     meta_df.iloc[i]["gene_names"],
                     meta_df.iloc[i]["locations"],
+                    meta_df.iloc[i].get("atlas_name", ""),
                 ))
 
         # ------ Build gene vocabulary (with frequency filter) ----------
@@ -80,7 +81,7 @@ class EmbeddingPairDatasetV2(Dataset):
 
         # ------ Build location vocabulary (multi-label) ----------------
         all_locs = set()
-        for _, _, _, loc_str in raw_items:
+        for _, _, _, loc_str, _ in raw_items:
             if loc_str:
                 for loc in str(loc_str).split(","):
                     loc = loc.strip()
@@ -90,9 +91,9 @@ class EmbeddingPairDatasetV2(Dataset):
 
         # ------ Resolve gene_idx per row --------------------------------
         items = []
-        for sub, esm, gene_key, loc_str in raw_items:
+        for sub, esm, gene_key, loc_str, atlas_str in raw_items:
             gene_idx = gene_vocab.get(gene_key, -1)
-            items.append((sub, esm, gene_idx, loc_str))
+            items.append((sub, esm, gene_idx, loc_str, atlas_str))
 
         return items, gene_vocab, loc_vocab
 
@@ -101,7 +102,7 @@ class EmbeddingPairDatasetV2(Dataset):
         return len(self.items)
 
     def __getitem__(self, idx):
-        img_arr, prots_list, gene_idx, loc_str = self.items[idx]
+        img_arr, prots_list, gene_idx, loc_str, _atlas = self.items[idx]
 
         img = torch.as_tensor(img_arr, dtype=torch.float32)
 

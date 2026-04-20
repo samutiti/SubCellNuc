@@ -110,20 +110,22 @@ for VERSION in versions:
     # Build metadata from dataset items (order matches DataLoader with shuffle=False)
     inv_gene_vocab = {v: k for k, v in gene_vocab.items()}
 
-    gene_names = []
-    locations  = []
-    gene_idxs  = []
+    gene_names  = []
+    locations   = []
+    gene_idxs   = []
+    atlas_names = []
 
-    for _sub, _esm, gene_idx, loc_str in dataset.items:
+    for _sub, _esm, gene_idx, loc_str, atlas_str in dataset.items:
         gene_idxs.append(gene_idx)
         gene_names.append(inv_gene_vocab.get(gene_idx, ""))
         locations.append(loc_str if loc_str else "")
+        atlas_names.append(atlas_str if atlas_str else "")
 
     obs_df = pd.DataFrame({
-        "gene_name": gene_names,
-        "gene_idx":  gene_idxs,
-        "locations": locations,
-        
+        "gene_name":  gene_names,
+        "gene_idx":   gene_idxs,
+        "locations":  locations,
+        "atlas_name": atlas_names,
     })
 
     # z = ESM-aligned projection (X), h = intermediate representation (obsm)
