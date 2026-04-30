@@ -12,16 +12,17 @@ from torch.utils.data import DataLoader
 from mlp_models_v2 import ImageProjectorV2, ProteinPool, ProteinIdentityHead, LocalizationHead
 from data_v2 import EmbeddingPairDatasetV2, collate_variable_proteins_v2
 
-versions = [5]
+versions = [6, 7]
+FILTER = 'U2OS'
 for VERSION in versions:
     print(
-        f'running v2 inference on version {VERSION} of training -- U2OS ONLY'
+        f'running v2 inference on version {VERSION} of training -- {FILTER}'
     )
 
     ########## FIT PARAMS HERE ################
     config_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/configs/train_v0{VERSION}.yml"
     model_dir       = Path(f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}")
-    outpath         = model_dir / "inference_u2os.h5ad"
+    outpath         = model_dir / f"inference_{FILTER}.h5ad"
     ###########################################
 
 
@@ -59,7 +60,7 @@ for VERSION in versions:
     dataset = EmbeddingPairDatasetV2(
         config["filedir"],
         min_gene_count=config.get("min_gene_count", 50),
-        atlas_filter="U2OS",
+        atlas_filter=FILTER,
     )
 
     print(f"Dataset size : {len(dataset)}")
