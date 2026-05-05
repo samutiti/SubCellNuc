@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from mlp_models_v2 import ImageProjectorV2, ProteinPool, ProteinIdentityHead, LocalizationHead
 from data_v2 import EmbeddingPairDatasetV2, collate_variable_proteins_v2
 
-versions = [6, 7]
+versions = [5]
 FILTER = 'U2OS'
 for VERSION in versions:
     print(
@@ -22,7 +22,7 @@ for VERSION in versions:
     ########## FIT PARAMS HERE ################
     config_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/configs/train_v0{VERSION}.yml"
     model_dir       = Path(f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}")
-    outpath         = model_dir / f"inference_{FILTER}.h5ad"
+    outpath         = model_dir / f"inference_{FILTER}.h5ad" if FILTER is not None else model_dir / f"inference.h5ad"
     ###########################################
 
 
@@ -59,7 +59,7 @@ for VERSION in versions:
 
     dataset = EmbeddingPairDatasetV2(
         config["filedir"],
-        min_gene_count=config.get("min_gene_count", 50),
+        min_gene_count=config.get("inference_min_gene_count", 50),
         atlas_filter=FILTER,
     )
 

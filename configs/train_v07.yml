@@ -16,3 +16,4 @@ lambda_loc: 0.0   # weight on localization BCE loss
 # dataset to receive a class index.  Rows below this threshold still
 # contribute to the CLIP loss; they are skipped in the identity CE loss.
 min_gene_count: 50
+inference_min_gene_count: 1
