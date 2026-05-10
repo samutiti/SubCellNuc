@@ -11,7 +11,7 @@ from torch.utils.data import Dataset
 class EmbeddingPairDatasetV2(Dataset):
     """
     Loads paired (subcell, ESM) embeddings together with per-row metadata
-    (gene_names, locations, atlas_name) produced by make_subcell_esm_data_3.py.
+    (gene_names, locations, atlas_name) produced by make_subcell_esm_data_v2.py.
 
     Directory layout expected (all files share the same numeric suffix):
         subcell_<start>_<end>.npy   – float32 [N, 1536]
