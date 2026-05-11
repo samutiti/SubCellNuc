@@ -30,6 +30,7 @@ In single-file mode the default is stacked; use --split-output to split.
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -165,6 +166,7 @@ def build_cellpose(model_type: str, use_gpu: bool) -> tuple[object, dict]:
 
 def run_cellpose(model, eval_kwargs: dict, img_2d: np.ndarray, diameter) -> np.ndarray:
     """Run Cellpose on a 2-D (H, W) image; return integer label mask."""
+    t0 = time.perf_counter()
     out = model.eval(
         img_2d,
         diameter=diameter,
@@ -172,6 +174,7 @@ def run_cellpose(model, eval_kwargs: dict, img_2d: np.ndarray, diameter) -> np.n
         cellprob_threshold=0.0,
         **eval_kwargs,
     )
+    tqdm.write(f"  cellpose eval: {time.perf_counter() - t0:.1f}s")
     return out[0].astype(np.int32)
 
 
@@ -343,6 +346,8 @@ def main():
                         help="Inserted between image stem and cell index in output filename")
     parser.add_argument("--crop-size", type=int, default=640)
     parser.add_argument("--gpu", action="store_true")
+    parser.add_argument("--batch-size", type=int, default=32,
+                        help="Cellpose-SAM tile batch size (v4 only). Bump if GPU has VRAM headroom.")
     parser.add_argument("--ext", default=".tif,.tiff,.png,.jpg,.jpeg",
                         help="Extensions scanned when input is a directory")
 
@@ -382,6 +387,7 @@ def main():
         sys.exit(1)
 
     args.cellpose_model, args.cellpose_eval_kwargs = build_cellpose(args.model, args.gpu)
+    args.cellpose_eval_kwargs["batch_size"] = args.batch_size
 
     total_cells = 0
 
