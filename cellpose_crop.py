@@ -125,19 +125,54 @@ def load_multichannel(
 # Cellpose
 # ---------------------------------------------------------------------------
 
-def run_cellpose(img_2d: np.ndarray, model_type: str, diameter, use_gpu: bool) -> np.ndarray:
-    """Run Cellpose on a 2-D (H, W) image; return integer label mask."""
-    from cellpose import models
+def build_cellpose(model_type: str, use_gpu: bool) -> tuple[object, dict]:
+    """
+    Construct a Cellpose model once. Returns (model, eval_kwargs).
 
-    model = models.Cellpose(model_type=model_type, gpu=use_gpu)
-    masks, _, _, _ = model.eval(
+    Cellpose >= 4 only ships Cellpose-SAM; `model_type` and `channels` are
+    ignored. Cellpose 3.x keeps the cyto/nuclei zoo and uses channels=[0,0]
+    for single-plane inputs.
+    """
+    from cellpose import models
+    try:
+        from cellpose import version as cp_version
+    except ImportError:
+        cp_version = "0.0.0"
+
+    major = int(cp_version.split(".")[0]) if cp_version[:1].isdigit() else 0
+
+    if use_gpu:
+        try:
+            import torch
+            if not torch.cuda.is_available():
+                print(
+                    "Warning: --gpu set but torch.cuda.is_available() is False; "
+                    "Cellpose will run on CPU (expect hours/FOV).",
+                    file=sys.stderr,
+                )
+        except ImportError:
+            pass
+
+    if major >= 4:
+        print(f"Cellpose {cp_version} detected: using Cellpose-SAM "
+              f"(--model {model_type!r} ignored).", file=sys.stderr)
+        return models.CellposeModel(gpu=use_gpu), {}
+
+    print(f"Cellpose {cp_version} detected: using model_type={model_type!r}.",
+          file=sys.stderr)
+    return models.Cellpose(model_type=model_type, gpu=use_gpu), {"channels": [0, 0]}
+
+
+def run_cellpose(model, eval_kwargs: dict, img_2d: np.ndarray, diameter) -> np.ndarray:
+    """Run Cellpose on a 2-D (H, W) image; return integer label mask."""
+    out = model.eval(
         img_2d,
         diameter=diameter,
-        channels=[0, 0],
         flow_threshold=0.4,
         cellprob_threshold=0.0,
+        **eval_kwargs,
     )
-    return masks.astype(np.int32)
+    return out[0].astype(np.int32)
 
 
 # ---------------------------------------------------------------------------
@@ -199,7 +234,7 @@ def segment_and_crop(
     else:
         seg_img = img
 
-    masks = run_cellpose(seg_img, args.model, args.diameter, args.gpu)
+    masks = run_cellpose(args.cellpose_model, args.cellpose_eval_kwargs, seg_img, args.diameter)
 
     cell_ids = np.unique(masks)
     cell_ids = cell_ids[cell_ids != 0]
@@ -345,6 +380,8 @@ def main():
     if not all_paths:
         print("No images found.", file=sys.stderr)
         sys.exit(1)
+
+    args.cellpose_model, args.cellpose_eval_kwargs = build_cellpose(args.model, args.gpu)
 
     total_cells = 0
 
