@@ -39,9 +39,30 @@ xap_set_normalized = {normalize_gene(g) for g in {
 "MYBBP1A", "IGF2BP3"
 }}
 
+print('WARNING: your XAP list is incomplete')
+
 with open('xap_to_accession_mapping.json', 'r') as f:
     xap_acc_list = json.load(f)
 xap_set_acc = list(xap_acc_list.values())
+
+def sample_pairwise_means(A, B=None, n_samples=1_000_000, batch_size=10000):
+    """
+    Estimate mean cosine similarity via random sampling.
+    If B is None: sample within A (excluding diagonal)
+    """
+    nA = A.shape[0]
+    if B is None:
+        idx1 = np.random.randint(0, nA, size=n_samples)
+        idx2 = np.random.randint(0, nA, size=n_samples)
+        mask = idx1 != idx2
+        sims = (A[idx1[mask]] * A[idx2[mask]]).sum(axis=1)
+    else:
+        nB = B.shape[0]
+        idx1 = np.random.randint(0, nA, size=n_samples)
+        idx2 = np.random.randint(0, nB, size=n_samples)
+        sims = (A[idx1] * B[idx2]).sum(axis=1)
+
+    return sims.mean(), sims
 
 # -----------------------------
 # 2. Identify U2OS rows
@@ -56,7 +77,7 @@ def is_xap(gene_string):
     genes = [normalize_gene(g) for g in gene_string.split(",")]
     return any(g in xap_set_normalized for g in genes)
 
-try: genes = data_df["gene"].values
+try: genes = data_df["gene_name"].values
 except:
     print(f'gene not available in dataframe with columns: {data_df}')
 xap_mask = np.array([is_xap(g) for g in genes])
@@ -83,19 +104,23 @@ print(f"\nComputing similarities without full matrix...")
 # 5. Compute group similarities efficiently
 # -----------------------------
 
-# XAP–XAP
-xap_dot = xap_emb @ xap_emb.T
-sum_xap_xap = xap_dot.sum() - np.trace(xap_dot)
-mean_xap_xap = sum_xap_xap / (n_x * (n_x - 1))
+# # XAP–XAP
+# xap_dot = xap_emb @ xap_emb.T
+# sum_xap_xap = xap_dot.sum() - np.trace(xap_dot)
+# mean_xap_xap = sum_xap_xap / (n_x * (n_x - 1))
 
-# Non–Non
-non_dot = non_emb @ non_emb.T
-sum_non_non = non_dot.sum() - np.trace(non_dot)
-mean_non_non = sum_non_non / (n_n * (n_n - 1))
+# # Non–Non
+# non_dot = non_emb @ non_emb.T
+# sum_non_non = non_dot.sum() - np.trace(non_dot)
+# mean_non_non = sum_non_non / (n_n * (n_n - 1))
 
-# XAP–Non
-xap_non_dot = xap_emb @ non_emb.T
-mean_xap_non = xap_non_dot.mean()
+# # XAP–Non
+# xap_non_dot = xap_emb @ non_emb.T
+# mean_xap_non = xap_non_dot.mean()
+
+mean_xap_xap, xap_vals = sample_pairwise_means(xap_emb, n_samples=1_000_000)
+mean_non_non, non_vals = sample_pairwise_means(non_emb, n_samples=1_000_000)
+mean_xap_non, xap_non_vals = sample_pairwise_means(xap_emb, non_emb, n_samples=1_000_000)
 
 print("\nMean cosine similarity:")
 print("XAP–XAP:", mean_xap_xap)
@@ -110,19 +135,17 @@ def fast_cohens_d(mean1, mean2, mat1, mat2):
     var2 = mat2.var()
     return (mean1 - mean2) / np.sqrt((var1 + var2) / 2)
 
+def cohens_d_from_samples(a, b):
+    return (a.mean() - b.mean()) / np.sqrt((a.var() + b.var()) / 2)
+
 print("\nEffect size (Cohen's d):")
-print("XAP vs Non–Non:", fast_cohens_d(mean_xap_xap, mean_non_non, xap_dot, non_dot))
-print("XAP vs Between:", fast_cohens_d(mean_xap_xap, mean_xap_non, xap_dot, xap_non_dot))
+print("XAP vs Non–Non:", cohens_d_from_samples(xap_vals, non_vals))
+print("XAP vs Between:", cohens_d_from_samples(xap_vals, xap_non_vals))
 
 # -----------------------------
 # 7. t-test
 # -----------------------------
 # XAP–XAP (exclude diagonal)
-xap_vals = xap_dot[~np.eye(n_x, dtype=bool)]
-
-# XAP–Non
-xap_non_vals = xap_non_dot.flatten()
-
 t_stat, p_val = ttest_ind(xap_vals, xap_non_vals, equal_var=False)
 
 print("\nT-test XAP–XAP vs XAP–Non:")
@@ -131,17 +154,17 @@ print("t =", t_stat, "p =", p_val)
 # -----------------------------
 # 8. Permutation test
 # -----------------------------
-def fast_permutation_test(emb, labels, n_perm=200):
-    n_x = labels.sum()
-    observed = (emb[labels] @ emb[labels].T).mean()
+def fast_permutation_test(emb, labels, n_perm=100, sample_size=200_000):
+    observed, _ = sample_pairwise_means(emb[labels], n_samples=sample_size)
 
     diffs = []
     for _ in range(n_perm):
         shuffled = np.random.permutation(labels)
-        val = (emb[shuffled] @ emb[shuffled].T).mean()
+        val, _ = sample_pairwise_means(emb[shuffled], n_samples=sample_size)
         diffs.append(val)
 
-    return observed, (np.sum(np.array(diffs) >= observed) + 1) / (n_perm + 1)
+    diffs = np.array(diffs)
+    return observed, (np.sum(diffs >= observed) + 1) / (n_perm + 1)
 
 obs, perm_p = fast_permutation_test(emb, xap_mask, n_perm=200)
 print("\nPermutation test p-value:", perm_p)
@@ -149,16 +172,14 @@ print("\nPermutation test p-value:", perm_p)
 # -----------------------------
 # 9. kNN enrichment (local clustering metric)
 # -----------------------------
-k = 10
-nbrs = NearestNeighbors(
-    n_neighbors=k+1,
-    metric="cosine",
-    algorithm="brute",
-    n_jobs=-1
-)
+import faiss
 
-nbrs.fit(emb)  # use normalized embeddings
-distances, indices = nbrs.kneighbors(emb)
+d = emb.shape[1]
+index = faiss.IndexFlatIP(d)  # cosine if normalized
+index.add(emb.astype(np.float32))
+
+k = 10
+distances, indices = index.search(emb.astype(np.float32), k+1)
 
 # exclude self (first neighbor)
 neighbor_labels = xap_mask[indices[:, 1:]]

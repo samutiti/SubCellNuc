@@ -1,7 +1,7 @@
 import anndata as ad 
 import scanpy as sc
 
-training_versions = [5, 6, 7]
+training_versions = [5]
 FILTER = 'U2OS'
 NUM_PCS = 50
 LEI_RES = 0.3
