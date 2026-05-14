@@ -36,7 +36,10 @@ xap_set_normalized = {normalize_gene(g) for g in {
 "SRSF7", "RBFOX2", "SRSF9", "SAFB", "THOC4", "DDX39A",
 "CELF1", "PCGF5", "RYBP", "TRIM71", "SRSF10", "RBM4",
 "YTHDC1", "TRIM6", "LIN28A", "SLTM", "SAFB2", "L1TD1",
-"MYBBP1A", "IGF2BP3"
+"MYBBP1A", "IGF2BP3", "SPEN", "HNRNPU", "RBM15", "LBR", "MATR3", "RNF40", 
+"RNF20","U2AF2", "HRNRNPM", "HNRNPF", "ZC3H14", "WAC",
+"RING1", "PCBP2", "PABPC3", "FDXR", "FUBP1", "RPA1", "RBM4B", "DDX42", 
+"CCAR2", "CBX3", "CAP1", "HADH", "SRSF8", "TALDO1", "SF1", "IRF4"
 }}
 
 print('WARNING: your XAP list is incomplete')
@@ -79,7 +82,9 @@ def is_xap(gene_string):
 
 try: genes = data_df["gene_name"].values
 except:
-    print(f'gene not available in dataframe with columns: {data_df}')
+    try: genes = data_df["gene"].values
+    except:
+        print(f'gene not available in dataframe with columns: {data_df}')
 xap_mask = np.array([is_xap(g) for g in genes])
 
 print("Total samples:", len(genes))

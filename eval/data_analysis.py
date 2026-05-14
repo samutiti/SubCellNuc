@@ -1,18 +1,15 @@
 import anndata as ad 
 import scanpy as sc
 
-training_versions = [5]
-FILTER = 'U2OS'
+embedding_files = ['/scratch/users/samutiti/U54/SubCellNuc/training_V05/inference_U2OS_mean.h5ad']
+prefixes = ['U2OS_mean']
+versions = [5]
 NUM_PCS = 50
 LEI_RES = 0.3
 
-for training_v in training_versions:
-    if filter is None:
-        embeddings = ad.read_h5ad(f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{training_v}/inference.h5ad")
-    else: embeddings = ad.read_h5ad(f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{training_v}/inference_{FILTER}.h5ad")
-
-    print(embeddings)
-    adata = embeddings
+for embedding_f, prefix, training_v in zip(embedding_files, prefixes, versions):
+    adata = ad.read_h5ad(embedding_f)
+    print(adata)
 
     sc.pp.pca(
             adata,
@@ -46,14 +43,12 @@ for training_v in training_versions:
     adata.obs["umap_y"] = adata.obsm["X_umap"][:, 1]
 
     print(adata)
-    if filter is None:
-        adata.write_h5ad(f'/scratch/users/samutiti/U54/SubCellNuc/training_V0{training_v}/inference_analyzed.h5ad')
-    else: adata.write_h5ad(f'/scratch/users/samutiti/U54/SubCellNuc/training_V0{training_v}/inference_{FILTER}_analyzed.h5ad')
+    adata.write_h5ad(f'/scratch/users/samutiti/U54/SubCellNuc/training_V0{training_v}/{prefix}_inference_analyzed.h5ad')
     print('adata written')
 
 
     ### Visualize Umap
-    save_suf = f"_training_V0{training_v}_mlp_embed.png" if not FILTER else f"_training_V0{training_v}__{FILTER}_mlp_embed.png"
+    save_suf = f"v{training_v}_{prefix}_mlp_embed.png"
     sc.pl.umap(
             adata,
             color=[f"leiden_{LEI_RES}"],
