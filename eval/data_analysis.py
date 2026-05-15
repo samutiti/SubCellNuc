@@ -1,9 +1,9 @@
 import anndata as ad 
 import scanpy as sc
 
-embedding_files = ['/scratch/users/samutiti/U54/SubCellNuc/training_V05/inference_U2OS_mean.h5ad']
-prefixes = ['U2OS_mean']
-versions = [5]
+embedding_files = ['/scratch/users/samutiti/U54/data/esm_emb.adata']
+prefixes = ['esm_mean']
+versions = [1]
 NUM_PCS = 50
 LEI_RES = 0.3
 

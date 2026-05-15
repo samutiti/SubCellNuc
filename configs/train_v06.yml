@@ -2,7 +2,7 @@ hidden_dim: 1500
 learning_rate: 0.001
 num_epochs: 50
 batch_size: 64
-filedir: "/scratch/users/samutiti/U54/paired_embeddings_v2"
+filedir: "/scratch/users/samutiti/U54/datasets/paired_embeddings_v2"
 shuffle: True
 output_dir: "training_V06"
 temperature: 0.07

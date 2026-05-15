@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from mlp_models_v2 import ImageProjectorV2, ProteinPool, ProteinIdentityHead, LocalizationHead
 from data_v2 import EmbeddingPairDatasetV2, collate_variable_proteins_v2
 
-versions = [5]
+versions = [6, 7, 8]
 FILTER = 'U2OS'
 for VERSION in versions:
     print(
