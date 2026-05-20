@@ -146,8 +146,10 @@ def fast_permutation_test(emb, labels, n_perm=100, sample_size=200_000):
 
     diffs = []
     for _ in range(n_perm):
-        shuffled = np.random.permutation(labels)
-        val, _ = sample_pairwise_means(emb[shuffled], n_samples=sample_size)
+        # shuffled = np.random.permutation(labels)
+        perm_labels = np.random.permutation(labels)
+        val, _ = sample_pairwise_means(emb[perm_labels], n_samples=sample_size)
+        # val, _ = sample_pairwise_means(emb[shuffled], n_samples=sample_size)
         diffs.append(val)
 
     diffs = np.array(diffs)
@@ -165,15 +167,17 @@ d = emb.shape[1]
 index = faiss.IndexFlatIP(d)  # cosine if normalized
 index.add(emb.astype(np.float32))
 
-k = 10
-distances, indices = index.search(emb.astype(np.float32), k+1)
+print('Looping through k(s), turn this functionality off as needed')
+for k in [5, 10, 25, 50, 100]:
+    print(f' ----- k = {k} -----')
+    distances, indices = index.search(emb.astype(np.float32), k+1)
 
-# exclude self (first neighbor)
-neighbor_labels = xap_mask[indices[:, 1:]]
+    # exclude self (first neighbor)
+    neighbor_labels = xap_mask[indices[:, 1:]]
 
-# fraction of neighbors that are XAP
-xap_neighbor_fraction = neighbor_labels.mean(axis=1)
+    # fraction of neighbors that are XAP
+    xap_neighbor_fraction = neighbor_labels.mean(axis=1)
 
-print("\nMean fraction of Disease neighbors:")
-print("For disease samples:", np.mean(xap_neighbor_fraction[xap_mask]))
-print("For Non-dis samples:", np.mean(xap_neighbor_fraction[~xap_mask]))
+    print("\nMean fraction of Disease neighbors:")
+    print("For disease samples:", np.mean(xap_neighbor_fraction[xap_mask]))
+    print("For Non-dis samples:", np.mean(xap_neighbor_fraction[~xap_mask]))

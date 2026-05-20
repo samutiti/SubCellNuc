@@ -1,9 +1,9 @@
 import anndata as ad 
 import scanpy as sc
 
-embedding_files = ['/scratch/users/samutiti/U54/data/esm_emb.adata']
-prefixes = ['esm_mean']
-versions = [1]
+embedding_files = ['/scratch/users/samutiti/U54/SubCellNuc/training_V10/inference_U2OS_mean.h5ad']
+prefixes = ['U2OS_mean']
+versions = [10]
 NUM_PCS = 50
 LEI_RES = 0.3
 
@@ -43,7 +43,7 @@ for embedding_f, prefix, training_v in zip(embedding_files, prefixes, versions):
     adata.obs["umap_y"] = adata.obsm["X_umap"][:, 1]
 
     print(adata)
-    adata.write_h5ad(f'/scratch/users/samutiti/U54/SubCellNuc/training_V0{training_v}/{prefix}_inference_analyzed.h5ad')
+    adata.write_h5ad(f'/scratch/users/samutiti/U54/SubCellNuc/training_V{training_v}/{prefix}_inference_analyzed.h5ad')
     print('adata written')
 
 

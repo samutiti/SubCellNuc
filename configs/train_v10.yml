@@ -2,22 +2,22 @@
 # The CLIP loss is applied in this shared space (shared_dim), instead of
 # pushing the image projection all the way to 1280-d ESM space.
 
-hidden_dim: 1500          # image-encoder hidden dim (h, also used by id/loc heads)
+hidden_dim: 1100          # image-encoder hidden dim (h, also used by id/loc heads)
 prot_hidden_dim: 1500     # ESM-encoder hidden dim (independent of image side)
-shared_dim: 512           # dimensionality of the shared latent space (z)
+shared_dim: 1024           # dimensionality of the shared latent space (z)
 
 learning_rate: 0.001
 num_epochs: 50
 batch_size: 64
 filedir: "/scratch/users/samutiti/U54/datasets/paired_embeddings_v2"
 shuffle: True
-output_dir: "training_V09"
+output_dir: "training_V10"
 temperature: 0.07
 
 # --- Multi-task loss weights ---
 # Set either to 0.0 to disable that auxiliary task entirely.
 lambda_id: 1.0     # weight on protein-identity cross-entropy loss
-lambda_loc: 1.0    # weight on localization BCE loss
+lambda_loc: 0.0    # weight on localization BCE loss
 
 # Minimum number of occurrences a gene_names key must have to receive a
 # class index. Rows below this still contribute to the CLIP loss; they are

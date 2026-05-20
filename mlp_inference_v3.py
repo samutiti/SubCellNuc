@@ -15,7 +15,7 @@ from mlp_models_v3 import (
 )
 from data_v2 import EmbeddingPairDatasetV2, collate_variable_proteins_v2
 
-versions = [9]
+versions = [10]
 FILTER = 'U2OS'
 for VERSION in versions:
     print(
@@ -23,8 +23,8 @@ for VERSION in versions:
     )
 
     ########## FIT PARAMS HERE ################
-    config_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/configs/train_v0{VERSION}.yaml"
-    model_dir       = Path(f"/scratch/users/samutiti/U54/SubCellNuc/training_V0{VERSION}")
+    config_filepath = f"/scratch/users/samutiti/U54/SubCellNuc/configs/train_v{VERSION}.yml"
+    model_dir       = Path(f"/scratch/users/samutiti/U54/SubCellNuc/training_V{VERSION}")
     outpath         = model_dir / f"inference_{FILTER}.h5ad" if FILTER is not None else model_dir / f"inference.h5ad"
     ###########################################
 
