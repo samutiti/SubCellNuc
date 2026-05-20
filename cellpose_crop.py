@@ -2,6 +2,24 @@
 """
 Segment cells in microscope FOV images with Cellpose and save per-cell crops.
 
+Speedups vs. the original
+-------------------------
+* Prefetched I/O: a background ThreadPool loads the next FOV(s) while the GPU
+  is busy running Cellpose. This is usually the biggest practical win, since
+  the GPU otherwise sits idle during disk reads.
+* Vectorised centroid extraction via scipy.ndimage.center_of_mass (replaces
+  the per-cell np.where, which was O(N_cells * H * W)).
+* Parallel crop writes through a worker thread pool.
+* Optional FOV-batched Cellpose inference: model.eval() can take a list of
+  FOVs and amortise the per-call Python overhead. Tune with --fov-batch.
+
+Resume safety
+-------------
+Each finished FOV is appended to `_cellpose_crop_manifest.csv` in the output
+directory. Re-running the same command skips FOVs already recorded with
+matching (crop_size, suffix, seg_channel, seg_color, split_output, diameter,
+model, source mtime). Use --no-resume to force re-processing everything.
+
 Two input modes
 ---------------
 Single-file mode  (default)
@@ -29,9 +47,16 @@ In single-file mode the default is stacked; use --split-output to split.
 """
 
 import argparse
+import csv
+import os
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import tifffile
@@ -39,6 +64,13 @@ from tqdm import tqdm
 
 DEFAULT_COLORS = ["blue", "green", "red", "yellow"]
 SUPPORTED_EXT = {".tif", ".tiff", ".png", ".jpg", ".jpeg"}
+
+MANIFEST_NAME = "_cellpose_crop_manifest.csv"
+MANIFEST_FIELDS = [
+    "base_name", "n_cells", "crop_size", "suffix",
+    "seg_channel", "seg_color", "split_output",
+    "diameter", "model", "src_mtime", "timestamp",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -164,22 +196,8 @@ def build_cellpose(model_type: str, use_gpu: bool) -> tuple[object, dict]:
     return models.Cellpose(model_type=model_type, gpu=use_gpu), {"channels": [0, 0]}
 
 
-def run_cellpose(model, eval_kwargs: dict, img_2d: np.ndarray, diameter) -> np.ndarray:
-    """Run Cellpose on a 2-D (H, W) image; return integer label mask."""
-    t0 = time.perf_counter()
-    out = model.eval(
-        img_2d,
-        diameter=diameter,
-        flow_threshold=0.4,
-        cellprob_threshold=0.0,
-        **eval_kwargs,
-    )
-    tqdm.write(f"  cellpose eval: {time.perf_counter() - t0:.1f}s")
-    return out[0].astype(np.int32)
-
-
 # ---------------------------------------------------------------------------
-# Cropping
+# Cropping & centroids
 # ---------------------------------------------------------------------------
 
 def pad_crop(img: np.ndarray, cy: int, cx: int, crop_size: int) -> np.ndarray:
@@ -207,112 +225,131 @@ def pad_crop(img: np.ndarray, cy: int, cx: int, crop_size: int) -> np.ndarray:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Core segment-and-crop  (shared by both modes)
-# ---------------------------------------------------------------------------
-
-def segment_and_crop(
-    img: np.ndarray,
-    base_name: str,
-    seg_channel: int,
-    out_dir: Path,
-    args,
-    color_names: list[str] | None = None,
-) -> int:
+def fast_centroids(masks: np.ndarray) -> list[tuple[int, int, int]]:
     """
-    Segment img with Cellpose and write one crop per cell.
+    Vectorised centroid extraction.
 
-    color_names controls output layout:
-      None          → single stacked TIFF per cell
-      list[str]     → one file per channel named {cell_stem}_{color}{out_ext}
+    Returns a list of (label_id, cy, cx) for every present label in `masks`.
+    Replaces the original per-label `np.where(masks == k)` loop which was
+    O(N_labels * H * W); this is O(H * W) regardless of label count.
     """
-    if img.ndim == 3:
-        n_ch = img.shape[2]
-        if seg_channel >= n_ch:
-            raise ValueError(
-                f"{base_name}: seg channel {seg_channel} out of range "
-                f"(image has {n_ch} channels)"
-            )
-        seg_img = img[:, :, seg_channel]
-    else:
-        seg_img = img
-
-    masks = run_cellpose(args.cellpose_model, args.cellpose_eval_kwargs, seg_img, args.diameter)
-
-    cell_ids = np.unique(masks)
-    cell_ids = cell_ids[cell_ids != 0]
-
-    if len(cell_ids) == 0:
-        tqdm.write(f"  [warn] {base_name}: no cells detected", file=sys.stderr)
-        return 0
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    for cell_id in cell_ids:
-        ys, xs = np.where(masks == cell_id)
-        cy = int(round(ys.mean()))
-        cx = int(round(xs.mean()))
-        crop = pad_crop(img, cy, cx, args.crop_size)
-        cell_stem = f"{base_name}{args.suffix}{cell_id:04d}"
-
-        if color_names is not None and crop.ndim == 3:
-            for i, color in enumerate(color_names):
-                save_array(crop[:, :, i], out_dir / f"{cell_stem}_{color}{args.out_ext}")
-        else:
-            tifffile.imwrite(
-                str(out_dir / f"{cell_stem}.tif"), crop, compression="zlib"
-            )
-
-    return len(cell_ids)
+    max_lbl = int(masks.max())
+    if max_lbl == 0:
+        return []
+    from scipy import ndimage
+    centers = ndimage.center_of_mass(
+        masks > 0, masks, np.arange(1, max_lbl + 1)
+    )
+    out: list[tuple[int, int, int]] = []
+    for label_id, c in enumerate(centers, start=1):
+        cy, cx = c
+        if np.isnan(cy):       # label_id absent (gap in labelling)
+            continue
+        out.append((label_id, int(round(cy)), int(round(cx))))
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Per-FOV entry points
+# Manifest (resume support)
 # ---------------------------------------------------------------------------
 
-def process_single(image_path: Path, split_output: bool, channel_order: list[str], args) -> int:
-    img = canonical_hwc(load_image(image_path))
-    out_dir = Path(args.output) if args.output else image_path.parent
+def _resume_key(base_name: str, crop_size: int, suffix: str, seg_channel: int,
+                seg_color: Optional[str], split_output: bool,
+                diameter, model: str, src_mtime: float) -> tuple:
+    return (
+        base_name,
+        int(crop_size),
+        str(suffix),
+        int(seg_channel),
+        str(seg_color or ""),
+        bool(split_output),
+        "" if diameter is None else f"{float(diameter):.4f}",
+        str(model or ""),
+        round(float(src_mtime), 3),
+    )
 
-    color_names = None
-    if split_output and img.ndim == 3:
-        n_ch = img.shape[2]
-        color_names = (
-            channel_order if len(channel_order) == n_ch
-            else [f"ch{i}" for i in range(n_ch)]
-        )
 
-    return segment_and_crop(img, image_path.stem, args.seg_channel, out_dir, args, color_names)
+class Manifest:
+    """Append-only CSV of completed FOVs. Survives process restarts."""
 
+    def __init__(self, path: Path):
+        self.path = path
+        self._done: set[tuple] = set()
+        self._lock = threading.Lock()
+        self._fp = None
+        self._writer = None
 
-def process_multichannel(
-    base_name: str,
-    color_paths: dict[str, Path],
-    channel_order: list[str],
-    split_output: bool,
-    args,
-) -> int:
-    img, actual_order = load_multichannel(color_paths, channel_order)
+    def load(self) -> int:
+        if not self.path.exists():
+            return 0
+        with self.path.open("r", newline="") as fp:
+            reader = csv.DictReader(fp)
+            for row in reader:
+                try:
+                    key = _resume_key(
+                        base_name=row["base_name"],
+                        crop_size=int(row["crop_size"]),
+                        suffix=row["suffix"],
+                        seg_channel=int(row["seg_channel"]),
+                        seg_color=row.get("seg_color") or "",
+                        split_output=str(row["split_output"]).lower() == "true",
+                        diameter=(float(row["diameter"]) if row.get("diameter") else None),
+                        model=row.get("model") or "",
+                        src_mtime=float(row["src_mtime"]),
+                    )
+                    self._done.add(key)
+                except Exception:
+                    # Bad/old row — ignore so a clean run can still proceed.
+                    continue
+        return len(self._done)
 
-    if args.seg_color:
-        if args.seg_color not in actual_order:
-            raise ValueError(
-                f"{base_name}: --seg-color '{args.seg_color}' not available "
-                f"(found: {actual_order})"
-            )
-        seg_channel = actual_order.index(args.seg_color)
-    else:
-        seg_channel = args.seg_channel
+    def already_done(self, key: tuple) -> bool:
+        return key in self._done
 
-    color_names = actual_order if split_output else None
-    ref_path = next(iter(color_paths.values()))
-    out_dir = Path(args.output) if args.output else ref_path.parent
-    return segment_and_crop(img, base_name, seg_channel, out_dir, args, color_names)
+    def open(self) -> None:
+        new_file = not self.path.exists() or self.path.stat().st_size == 0
+        self._fp = self.path.open("a", newline="")
+        self._writer = csv.DictWriter(self._fp, fieldnames=MANIFEST_FIELDS)
+        if new_file:
+            self._writer.writeheader()
+            self._fp.flush()
+
+    def append(self, **row) -> None:
+        with self._lock:
+            self._writer.writerow({k: row.get(k, "") for k in MANIFEST_FIELDS})
+            self._fp.flush()
+            try:
+                os.fsync(self._fp.fileno())
+            except (OSError, AttributeError):
+                pass
+
+    def close(self) -> None:
+        if self._fp is not None:
+            self._fp.close()
+            self._fp = None
 
 
 # ---------------------------------------------------------------------------
-# CLI
+# Work items + prefetch loader
 # ---------------------------------------------------------------------------
+
+@dataclass
+class WorkItem:
+    base_name: str
+    single_path: Optional[Path]
+    color_paths: Optional[dict[str, Path]]
+    out_dir: Path
+    src_mtime: float
+
+
+@dataclass
+class LoadedItem:
+    item: WorkItem
+    img: Optional[np.ndarray]
+    color_order: Optional[list[str]]   # multichannel: actual color order
+    seg_channel_idx: int
+    error: Optional[Exception] = None
+
 
 def collect_paths(inputs: list[str], extensions: set[str]) -> list[Path]:
     paths: list[Path] = []
@@ -329,7 +366,234 @@ def collect_paths(inputs: list[str], extensions: set[str]) -> list[Path]:
     return paths
 
 
-def main():
+def collect_work_items(args, channel_order: list[str]) -> list[WorkItem]:
+    extensions = {e.strip().lower() for e in args.ext.split(",")}
+    all_paths = collect_paths(args.input, extensions)
+    if not all_paths:
+        return []
+
+    items: list[WorkItem] = []
+    if args.multichannel:
+        groups = group_by_color(all_paths, channel_order)
+        for base_name in sorted(groups):
+            color_paths = groups[base_name]
+            ref_path = next(iter(color_paths.values()))
+            out_dir = Path(args.output) if args.output else ref_path.parent
+            src_mtime = max(p.stat().st_mtime for p in color_paths.values())
+            items.append(WorkItem(
+                base_name=base_name,
+                single_path=None,
+                color_paths=color_paths,
+                out_dir=out_dir,
+                src_mtime=src_mtime,
+            ))
+    else:
+        for path in all_paths:
+            out_dir = Path(args.output) if args.output else path.parent
+            items.append(WorkItem(
+                base_name=path.stem,
+                single_path=path,
+                color_paths=None,
+                out_dir=out_dir,
+                src_mtime=path.stat().st_mtime,
+            ))
+        items.sort(key=lambda w: w.base_name)
+    return items
+
+
+def load_one(item: WorkItem, channel_order: list[str], seg_color: Optional[str],
+             seg_channel: int) -> LoadedItem:
+    """Load one FOV from disk. Errors are captured on the LoadedItem."""
+    try:
+        if item.color_paths is not None:
+            img, actual_order = load_multichannel(item.color_paths, channel_order)
+            if seg_color:
+                if seg_color not in actual_order:
+                    raise ValueError(
+                        f"{item.base_name}: --seg-color '{seg_color}' not "
+                        f"available (found: {actual_order})"
+                    )
+                idx = actual_order.index(seg_color)
+            else:
+                idx = seg_channel
+            return LoadedItem(item, img, actual_order, idx)
+        img = canonical_hwc(load_image(item.single_path))
+        idx = seg_channel
+        if img.ndim == 3:
+            n_ch = img.shape[2]
+            if seg_channel >= n_ch:
+                raise ValueError(
+                    f"{item.base_name}: seg channel {seg_channel} out of "
+                    f"range (image has {n_ch} channels)"
+                )
+        return LoadedItem(item, img, None, idx)
+    except Exception as exc:
+        return LoadedItem(item, None, None, 0, error=exc)
+
+
+def prefetch_loader(
+    work_items: list[WorkItem],
+    channel_order: list[str],
+    seg_color: Optional[str],
+    seg_channel: int,
+    io_workers: int,
+    prefetch: int,
+):
+    """Yield LoadedItem in input order, prefetching ahead with a thread pool."""
+    if io_workers <= 0 or len(work_items) <= 1:
+        for w in work_items:
+            yield load_one(w, channel_order, seg_color, seg_channel)
+        return
+
+    prefetch = max(1, prefetch)
+    executor = ThreadPoolExecutor(max_workers=io_workers,
+                                  thread_name_prefix="fov-loader")
+    try:
+        pending = []
+        idx_next = 0
+        while idx_next < min(prefetch, len(work_items)):
+            pending.append(executor.submit(
+                load_one, work_items[idx_next],
+                channel_order, seg_color, seg_channel,
+            ))
+            idx_next += 1
+
+        for _ in range(len(work_items)):
+            loaded = pending.pop(0).result()
+            if idx_next < len(work_items):
+                pending.append(executor.submit(
+                    load_one, work_items[idx_next],
+                    channel_order, seg_color, seg_channel,
+                ))
+                idx_next += 1
+            yield loaded
+    finally:
+        executor.shutdown(wait=False)
+
+
+# ---------------------------------------------------------------------------
+# Save dispatch
+# ---------------------------------------------------------------------------
+
+def dispatch_crop_writes(loaded: LoadedItem, mask: np.ndarray,
+                         args, split_output: bool, save_pool: ThreadPoolExecutor):
+    """Compute centroids, generate crops, submit per-crop writes. Returns (futures, n_cells)."""
+    centroids = fast_centroids(mask)
+    if not centroids:
+        return [], 0
+
+    loaded.item.out_dir.mkdir(parents=True, exist_ok=True)
+    img = loaded.img
+
+    color_order: Optional[list[str]] = None
+    if split_output and img.ndim == 3:
+        n_ch = img.shape[2]
+        if loaded.color_order is not None and len(loaded.color_order) == n_ch:
+            color_order = loaded.color_order
+        else:
+            # Single-file mode (or mismatch): synthesize channel names so
+            # downstream filenames stay deterministic.
+            color_order = [f"ch{i}" for i in range(n_ch)]
+
+    futures = []
+    for label_id, cy, cx in centroids:
+        crop = pad_crop(img, cy, cx, args.crop_size)
+        cell_stem = f"{loaded.item.base_name}{args.suffix}{label_id:04d}"
+        if color_order is not None:
+            for i, color in enumerate(color_order):
+                target = loaded.item.out_dir / f"{cell_stem}_{color}{args.out_ext}"
+                futures.append(save_pool.submit(
+                    save_array, crop[:, :, i].copy(), target
+                ))
+        else:
+            target = loaded.item.out_dir / f"{cell_stem}.tif"
+            futures.append(save_pool.submit(
+                tifffile.imwrite, str(target), crop, compression="zlib"
+            ))
+    return futures, len(centroids)
+
+
+# ---------------------------------------------------------------------------
+# Batch inference
+# ---------------------------------------------------------------------------
+
+def _split_masks_output(masks_out, n: int) -> list[np.ndarray]:
+    """Normalise model.eval() output to a list of N 2-D label masks."""
+    if n == 1:
+        return [np.asarray(masks_out)]
+    if isinstance(masks_out, np.ndarray) and masks_out.ndim == 3:
+        return [masks_out[i] for i in range(masks_out.shape[0])]
+    return [np.asarray(m) for m in masks_out]
+
+
+def process_batch(batch: list[LoadedItem], args, split_output: bool,
+                  save_pool: ThreadPoolExecutor, manifest: Manifest,
+                  pbar: tqdm) -> int:
+    """Run Cellpose on a batch of FOVs, save crops, record in manifest."""
+    seg_inputs = []
+    for loaded in batch:
+        img = loaded.img
+        seg_inputs.append(
+            img[:, :, loaded.seg_channel_idx] if img.ndim == 3 else img
+        )
+
+    t0 = time.perf_counter()
+    out = args.cellpose_model.eval(
+        seg_inputs if len(seg_inputs) > 1 else seg_inputs[0],
+        diameter=args.diameter,
+        flow_threshold=0.4,
+        cellprob_threshold=0.0,
+        **args.cellpose_eval_kwargs,
+    )
+    tqdm.write(f"  cellpose eval (FOVs={len(seg_inputs)}): "
+               f"{time.perf_counter() - t0:.1f}s")
+
+    all_masks = _split_masks_output(out[0], len(seg_inputs))
+
+    total_cells = 0
+    for loaded, mask in zip(batch, all_masks):
+        mask = np.asarray(mask).astype(np.int32, copy=False)
+        try:
+            futures, n_cells = dispatch_crop_writes(
+                loaded, mask, args, split_output, save_pool
+            )
+            # Wait for THIS FOV's writes to finish before manifesting it,
+            # so a mid-run crash never leaves a "done" entry with missing files.
+            for f in futures:
+                f.result()
+            if n_cells == 0:
+                tqdm.write(f"  [warn] {loaded.item.base_name}: no cells detected",
+                           file=sys.stderr)
+            manifest.append(
+                base_name=loaded.item.base_name,
+                n_cells=n_cells,
+                crop_size=args.crop_size,
+                suffix=args.suffix,
+                seg_channel=args.seg_channel,
+                seg_color=args.seg_color or "",
+                split_output=str(bool(split_output)),
+                diameter=("" if args.diameter is None else f"{float(args.diameter):.4f}"),
+                model=args.model,
+                src_mtime=f"{loaded.item.src_mtime:.3f}",
+                timestamp=datetime.now().isoformat(timespec="seconds"),
+            )
+            extra = ""
+            if loaded.color_order is not None:
+                extra = f"  [channels: {loaded.color_order}]"
+            tqdm.write(f"  {loaded.item.base_name}: {n_cells} cell(s){extra}")
+            total_cells += n_cells
+        except Exception as exc:
+            tqdm.write(f"  [error] {loaded.item.base_name}: {exc}", file=sys.stderr)
+        finally:
+            pbar.update(1)
+    return total_cells
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def build_argparser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Segment cells with Cellpose and save per-cell crops.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -347,7 +611,7 @@ def main():
     parser.add_argument("--crop-size", type=int, default=640)
     parser.add_argument("--gpu", action="store_true")
     parser.add_argument("--batch-size", type=int, default=32,
-                        help="Cellpose-SAM tile batch size (v4 only). Bump if GPU has VRAM headroom.")
+                        help="Cellpose tile batch size (per-FOV internal batching).")
     parser.add_argument("--ext", default=".tif,.tiff,.png,.jpg,.jpeg",
                         help="Extensions scanned when input is a directory")
 
@@ -371,62 +635,118 @@ def main():
     parser.add_argument("--out-ext", default=".tif",
                         choices=[".tif", ".tiff", ".png", ".jpg"],
                         help="File extension for split-output channel files")
-    parser.set_defaults(split_output=None)   # None → resolved per-mode below
+    parser.set_defaults(split_output=None)   # resolved per-mode below
 
-    args = parser.parse_args()
+    # New: pipeline / resume controls
+    parser.add_argument("--fov-batch", type=int, default=4,
+                        help="How many FOVs to send to model.eval() at once.")
+    parser.add_argument("--io-workers", type=int, default=4,
+                        help="Threads for prefetching FOV images from disk.")
+    parser.add_argument("--save-workers", type=int, default=8,
+                        help="Threads for writing per-cell crops to disk.")
+    parser.add_argument("--prefetch", type=int, default=None,
+                        help="How many FOVs to keep loaded ahead of the GPU "
+                             "(default: fov_batch + 2).")
+    parser.add_argument("--no-resume", dest="resume", action="store_false",
+                        help="Ignore any existing manifest and re-process all FOVs.")
+    parser.add_argument("--manifest", default=None,
+                        help="Override manifest CSV path "
+                             f"(default: <output>/{MANIFEST_NAME}).")
+    parser.set_defaults(resume=True)
+    return parser
 
-    extensions = {e.strip().lower() for e in args.ext.split(",")}
+
+def run(args) -> None:
     channel_order = [c.strip().lower() for c in args.channel_order.split(",")]
-
-    # Default: split in multichannel mode, stacked in single-file mode
     split_output = args.split_output if args.split_output is not None else args.multichannel
 
-    all_paths = collect_paths(args.input, extensions)
-    if not all_paths:
+    work_items = collect_work_items(args, channel_order)
+    if not work_items:
         print("No images found.", file=sys.stderr)
         sys.exit(1)
+
+    manifest_dir = Path(args.output) if args.output else work_items[0].out_dir
+    manifest_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = Path(args.manifest) if args.manifest else manifest_dir / MANIFEST_NAME
+    manifest = Manifest(manifest_path)
+
+    if args.resume:
+        n_known = manifest.load()
+        if n_known:
+            print(f"Manifest: {n_known} prior FOV(s) on record at {manifest_path}.")
+        keep: list[WorkItem] = []
+        for w in work_items:
+            key = _resume_key(
+                base_name=w.base_name,
+                crop_size=args.crop_size,
+                suffix=args.suffix,
+                seg_channel=args.seg_channel,
+                seg_color=args.seg_color,
+                split_output=split_output,
+                diameter=args.diameter,
+                model=args.model,
+                src_mtime=w.src_mtime,
+            )
+            if not manifest.already_done(key):
+                keep.append(w)
+        skipped = len(work_items) - len(keep)
+        if skipped:
+            print(f"Resume: skipping {skipped} FOV(s) already complete.")
+        work_items = keep
+
+    if not work_items:
+        print("Nothing to do.")
+        return
+
+    out_label = f"split ({args.out_ext}/channel)" if split_output else "stacked TIFF"
+    print(f"Processing {len(work_items)} FOV(s). Output: {out_label}. "
+          f"Cellpose model: {args.model}. "
+          f"fov_batch={args.fov_batch}, io_workers={args.io_workers}, "
+          f"save_workers={args.save_workers}.")
 
     args.cellpose_model, args.cellpose_eval_kwargs = build_cellpose(args.model, args.gpu)
     args.cellpose_eval_kwargs["batch_size"] = args.batch_size
 
+    prefetch = args.prefetch if args.prefetch is not None else args.fov_batch + 2
+
+    manifest.open()
+    save_pool = ThreadPoolExecutor(max_workers=max(1, args.save_workers),
+                                   thread_name_prefix="crop-writer")
+    pbar = tqdm(total=len(work_items), unit="FOV")
     total_cells = 0
-
-    if args.multichannel:
-        groups = group_by_color(all_paths, channel_order)
-        if not groups:
-            print(
-                "No files matched the {NAME}_{color}.ext pattern. "
-                "Check --channel-order and --ext.",
-                file=sys.stderr,
-            )
-            sys.exit(1)
-
-        out_label = f"split ({args.out_ext}/channel)" if split_output else "stacked TIFF"
-        print(
-            f"Found {len(groups)} FOV(s) across {len(all_paths)} channel file(s). "
-            f"Output: {out_label}. Running Cellpose ({args.model})..."
+    try:
+        loader = prefetch_loader(
+            work_items, channel_order, args.seg_color, args.seg_channel,
+            io_workers=max(0, args.io_workers), prefetch=prefetch,
         )
+        batch: list[LoadedItem] = []
+        for loaded in loader:
+            if loaded.error is not None:
+                tqdm.write(
+                    f"  [load-error] {loaded.item.base_name}: {loaded.error}",
+                    file=sys.stderr,
+                )
+                pbar.update(1)
+                continue
+            batch.append(loaded)
+            if len(batch) >= max(1, args.fov_batch):
+                total_cells += process_batch(batch, args, split_output,
+                                             save_pool, manifest, pbar)
+                batch = []
+        if batch:
+            total_cells += process_batch(batch, args, split_output,
+                                         save_pool, manifest, pbar)
+    finally:
+        pbar.close()
+        save_pool.shutdown(wait=True)
+        manifest.close()
 
-        for base_name in tqdm(sorted(groups), unit="FOV"):
-            color_paths = groups[base_name]
-            try:
-                n = process_multichannel(base_name, color_paths, channel_order, split_output, args)
-                tqdm.write(f"  {base_name}: {n} cell(s)  [channels: {list(color_paths)}]")
-                total_cells += n
-            except Exception as exc:
-                tqdm.write(f"  [error] {base_name}: {exc}", file=sys.stderr)
+    print(f"\nDone. {total_cells} crops saved. Manifest: {manifest_path}")
 
-    else:
-        print(f"Found {len(all_paths)} image(s). Running Cellpose ({args.model})...")
-        for path in tqdm(all_paths, unit="FOV"):
-            try:
-                n = process_single(path, split_output, channel_order, args)
-                tqdm.write(f"  {path.name}: {n} cell(s)")
-                total_cells += n
-            except Exception as exc:
-                tqdm.write(f"  [error] {path.name}: {exc}", file=sys.stderr)
 
-    print(f"\nDone. {total_cells} crops saved.")
+def main():
+    args = build_argparser().parse_args()
+    run(args)
 
 
 if __name__ == "__main__":
