@@ -175,6 +175,7 @@ def build_cellpose(model_type: str, use_gpu: bool) -> tuple[object, dict]:
     major = int(cp_version.split(".")[0]) if cp_version[:1].isdigit() else 0
 
     if use_gpu:
+        print('using gpu')
         try:
             import torch
             if not torch.cuda.is_available():
